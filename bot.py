@@ -39,6 +39,8 @@ APP_URL = os.getenv("APP_URL", "https://kitobbot-m6m8.onrender.com").rstrip("/")
 PORT = int(os.getenv("PORT", 8080))
 DEFAULT_BOOK_PATH = os.getenv("BOOK_PATH", "books/book.pdf")
 ADMIN_PASSWORD = "12@$"
+MAX_FILE_SIZE_MB = 60
+MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -309,10 +311,10 @@ async def cb_add_book_prompt(callback: types.CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_for_book_file)
     await callback.message.edit_text(
-        "📥 <b>Yangi kitob qo'shish:</b>\n\n"
-        "1. Botga <b>PDF fayl</b> yuboring (20 MB gacha);\n"
-        "2. Yoki kitobning <b>to'g'ridan-to'g'ri yuklab olish havolasini (linkini)</b> yuboring (istalgan hajmda).\n\n"
-        "Shuningdek, <code>/yukla https://link... Kitob nomi</code> ko'rinishida ham yozishingiz mumkin.",
+        f"📥 <b>Yangi kitob qo'shish:</b>\n\n"
+        f"1. Botga <b>PDF fayl</b> yuboring ({MAX_FILE_SIZE_MB} MB gacha);\n"
+        f"2. Yoki kitobning <b>to'g'ridan-to'g'ri yuklab olish havolasini (linkini)</b> yuboring ({MAX_FILE_SIZE_MB} MB gacha).\n\n"
+        f"Shuningdek, <code>/yukla https://link... Kitob nomi</code> ko'rinishida ham yozishingiz mumkin.",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Bekor qilish", callback_data="admin_books")]])
     )
@@ -327,10 +329,10 @@ async def cmd_load_book(message: types.Message, state: FSMContext):
     if len(args) == 1:
         await state.set_state(AdminStates.waiting_for_book_file)
         await message.answer(
-            "📥 <b>Yangi kitob yuklash:</b>\n\n"
-            "1. Botga <b>PDF fayl</b> yuboring (20 MB gacha);\n"
-            "2. Yoki kitobning <b>to'g'ridan-to'g'ri yuklab olish havolasini (linkini)</b> yuboring.\n\n"
-            "💡 Fayl qabul qilingach, bot sizdan <b>kitobning to'liq nomini</b> so'raydi.",
+            f"📥 <b>Yangi kitob yuklash:</b>\n\n"
+            f"1. Botga <b>PDF fayl</b> yuboring ({MAX_FILE_SIZE_MB} MB gacha);\n"
+            f"2. Yoki kitobning <b>to'g'ridan-to'g'ri yuklab olish havolasini (linkini)</b> yuboring ({MAX_FILE_SIZE_MB} MB gacha).\n\n"
+            f"💡 Fayl qabul qilingach, bot sizdan <b>kitobning to'liq nomini</b> so'raydi.",
             parse_mode="HTML"
         )
         return
@@ -343,8 +345,17 @@ async def cmd_load_book(message: types.Message, state: FSMContext):
         filename = f"books/book_{len(get_all_books()) + 1}.pdf"
         os.makedirs(os.path.dirname(filename), exist_ok=True)
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=120) as resp, open(filename, "wb") as f:
-            f.write(resp.read())
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            content_length = resp.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_FILE_SIZE:
+                await wait_msg.edit_text(f"⚠️ Kitob hajmi {MAX_FILE_SIZE_MB} MB dan oshmasligi kerak! ({round(int(content_length)/(1024*1024), 1)} MB)")
+                return
+            content = resp.read()
+            if len(content) > MAX_FILE_SIZE:
+                await wait_msg.edit_text(f"⚠️ Kitob hajmi {MAX_FILE_SIZE_MB} MB dan oshmasligi kerak! ({round(len(content)/(1024*1024), 1)} MB)")
+                return
+            with open(filename, "wb") as f:
+                f.write(content)
 
         pages = get_total_pages(filename)
 
@@ -384,8 +395,19 @@ async def process_book_input(message: types.Message, state: FSMContext):
             filename = f"books/book_{len(get_all_books()) + 1}.pdf"
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=120) as resp, open(filename, "wb") as f:
-                f.write(resp.read())
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                content_length = resp.headers.get("Content-Length")
+                if content_length and int(content_length) > MAX_FILE_SIZE:
+                    await wait_msg.edit_text(f"⚠️ Kitob hajmi {MAX_FILE_SIZE_MB} MB dan oshmasligi kerak! ({round(int(content_length)/(1024*1024), 1)} MB)")
+                    await state.clear()
+                    return
+                content = resp.read()
+                if len(content) > MAX_FILE_SIZE:
+                    await wait_msg.edit_text(f"⚠️ Kitob hajmi {MAX_FILE_SIZE_MB} MB dan oshmasligi kerak! ({round(len(content)/(1024*1024), 1)} MB)")
+                    await state.clear()
+                    return
+                with open(filename, "wb") as f:
+                    f.write(content)
             pages = get_total_pages(filename)
             await state.update_data(pending_book={"path": filename, "pages": pages, "url": url})
             await state.set_state(AdminStates.waiting_for_book_name)
@@ -407,10 +429,10 @@ async def process_book_input(message: types.Message, state: FSMContext):
             await message.answer("Iltimos, faqat PDF fayl yuboring.")
             return
 
-        if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+        if doc.file_size and doc.file_size > MAX_FILE_SIZE:
             await message.answer(
-                f"⚠️ Telegram 20 MB dan katta fayllarni chat orqali yuklashga ruxsat bermaydi ({round(doc.file_size / (1024*1024), 1)} MB).\n"
-                f"Iltimos, faylning yuklab olish havolasini yuboring yoki /yukla buyrug'idan foydalaning."
+                f"⚠️ Kitob hajmi {MAX_FILE_SIZE_MB} MB dan oshmasligi kerak ({round(doc.file_size / (1024*1024), 1)} MB).\n"
+                f"Iltimos, hajmi {MAX_FILE_SIZE_MB} MB gacha bo'lgan kitob yuboring."
             )
             return
 
@@ -430,8 +452,22 @@ async def process_book_input(message: types.Message, state: FSMContext):
                 parse_mode="HTML"
             )
         except Exception as e:
-            await wait_msg.edit_text(f"❌ Saqlashda xatolik: {e}")
-            await state.clear()
+            err_str = str(e).lower()
+            if "too big" in err_str or (doc.file_size and doc.file_size > 20 * 1024 * 1024):
+                await wait_msg.edit_text(
+                    f"⚠️ <b>Telegram cheklovi:</b>\n"
+                    f"Telegram serveri 20 MB dan oshiq fayllarni bot chatiga bevosita yuklashga ruxsat bermaydi "
+                    f"({round(doc.file_size / (1024*1024), 1)} MB).\n\n"
+                    f"💡 <b>Lekin ushbu kitobni ({MAX_FILE_SIZE_MB} MB gacha) yuklash juda oson:</b>\n"
+                    f"Kitobning yuklab olish linkini yuboring yoki quyidagicha yozing:\n"
+                    f"<code>/yukla https://havola.pdf Kitob nomi</code>\n\n"
+                    f"<i>(Masalan: catbox.moe yoki istalgan fayl saqlash xizmati linki)</i>",
+                    parse_mode="HTML"
+                )
+                await state.clear()
+            else:
+                await wait_msg.edit_text(f"❌ Saqlashda xatolik: {e}")
+                await state.clear()
         return
 
     await message.answer("Iltimos, PDF fayl yoki havola yuboring.")
@@ -474,12 +510,10 @@ async def handle_document_direct(message: types.Message, state: FSMContext):
     if not doc.file_name.lower().endswith(".pdf"):
         return
 
-    if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+    if doc.file_size and doc.file_size > MAX_FILE_SIZE:
         await message.answer(
-            f"⚠️ Telegram qoidasiga ko'ra botlar 20 MB dan katta fayllarni chatdan yuklab ololmaydi "
-            f"({round(doc.file_size / (1024*1024), 1)} MB).\n"
-            f"💡 Katta kitoblarni yuklash uchun: <code>/yukla https://link... Kitob nomi</code> ko'rinishida yuboring.",
-            parse_mode="HTML"
+            f"⚠️ Kitob hajmi {MAX_FILE_SIZE_MB} MB dan oshmasligi kerak ({round(doc.file_size / (1024*1024), 1)} MB).\n"
+            f"Iltimos, hajmi {MAX_FILE_SIZE_MB} MB gacha bo'lgan kitob yuboring."
         )
         return
 
@@ -499,7 +533,22 @@ async def handle_document_direct(message: types.Message, state: FSMContext):
             parse_mode="HTML"
         )
     except Exception as e:
-        await wait_msg.edit_text(f"❌ Kitobni saqlashda xatolik: {e}")
+        err_str = str(e).lower()
+        if "too big" in err_str or (doc.file_size and doc.file_size > 20 * 1024 * 1024):
+            await wait_msg.edit_text(
+                f"⚠️ <b>Telegram cheklovi:</b>\n"
+                f"Telegram serveri 20 MB dan oshiq fayllarni bot chatiga bevosita yuklashga ruxsat bermaydi "
+                f"({round(doc.file_size / (1024*1024), 1)} MB).\n\n"
+                f"💡 <b>Lekin ushbu kitobni ({MAX_FILE_SIZE_MB} MB gacha) yuklash juda oson:</b>\n"
+                f"Kitobning yuklab olish linkini yuboring yoki quyidagicha yozing:\n"
+                f"<code>/yukla https://havola.pdf Kitob nomi</code>\n\n"
+                f"<i>(Masalan: catbox.moe yoki istalgan fayl saqlash xizmati linki)</i>",
+                parse_mode="HTML"
+            )
+            await state.clear()
+        else:
+            await wait_msg.edit_text(f"❌ Kitobni saqlashda xatolik: {e}")
+            await state.clear()
 
 # ==================== MAJBURIY OBUNALAR ====================
 @dp.callback_query(F.data == "admin_channels")
