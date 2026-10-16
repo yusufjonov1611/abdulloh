@@ -755,37 +755,39 @@ async def search_handler(message: types.Message):
     results = res["results"]
     matched_query = res.get("matched_query", query)
     definition = res.get("definition")
+    note = res.get("note", "")
 
     if total == 0:
-        msg = f"❌ <b>'{html.escape(query)}'</b> so'zi (va shakllari) 📚 <b>\"{html.escape(book_name)}\"</b> kitobidan topilmadi.\n"
+        msg = f"❌ <b>'{html.escape(query)}'</b> so'zi 📚 <b>\"{html.escape(book_name)}\"</b> kitobidan topilmadi.\n"
         if definition:
-            msg += (
-                f"\n📖 <b>Asl so'zning ma'nosi:</b>\n"
-                f"🇺🇿 {html.escape(definition['meaning_uz'])}\n"
-            )
-            if definition.get('meaning_en') and not definition['meaning_en'].startswith('Original word'):
-                msg += f"🇬🇧 <i>{html.escape(definition['meaning_en'])}</i>\n"
-        msg += "\nSo'zni to'g'ri yozganingizni tekshirib, qaytadan urinib ko'ring."
+            msg += "\n📖 <b>So'zning asl ma'nosi:</b>\n"
+            if definition.get('meaning_en'):
+                msg += f"🇬🇧 <b>Inglizcha:</b> <i>{html.escape(definition['meaning_en'])}</i>\n"
+            if definition.get('meaning_uz'):
+                msg += f"🇺🇿 <b>O'zbekcha:</b> {html.escape(definition['meaning_uz'])}\n"
+        msg += "\nIltimos, so'z to'g'ri yozilganini tekshirib, qaytadan urinib ko'ring."
         await wait_msg.edit_text(msg, parse_mode="HTML")
         return
 
     msg_text = f"📚 <b>Kitob:</b> \"{html.escape(book_name)}\"\n"
     if matched_query.lower() != query.lower():
         msg_text += (
-            f"✅ <b>'{html.escape(query)}'</b> so'zi bo'yicha uning <b>'{html.escape(matched_query)}'</b> shakli "
+            f"✅ <b>'{html.escape(query)}'</b> so'zi bo'yicha tahlil natijasida <b>'{html.escape(matched_query)}'</b> shakli "
             f"ushbu kitobda jami <b>{total}</b> marta uchradi.\n"
         )
     else:
         msg_text += f"✅ <b>'{html.escape(query)}'</b> so'zi ushbu kitobda jami <b>{total}</b> marta uchradi.\n"
 
-    # 1. Asl so'zning ma'nosi
+    if note:
+        msg_text += f"💡 {note}\n"
+
+    # 1. Asl so'zning ma'nosi (1-Inglizcha, 2-O'zbekcha ketma-ket)
     if definition:
-        msg_text += (
-            f"\n📖 <b>Asl so'zning ma'nosi:</b>\n"
-            f"🇺🇿 {html.escape(definition['meaning_uz'])}\n"
-        )
-        if definition.get('meaning_en') and not definition['meaning_en'].startswith('Original word'):
-            msg_text += f"🇬🇧 <i>{html.escape(definition['meaning_en'])}</i>\n"
+        msg_text += "\n📖 <b>So'zning asl ma'nosi:</b>\n"
+        if definition.get('meaning_en'):
+            msg_text += f"🇬🇧 <b>Inglizcha:</b> <i>{html.escape(definition['meaning_en'])}</i>\n"
+        if definition.get('meaning_uz'):
+            msg_text += f"🇺🇿 <b>O'zbekcha:</b> {html.escape(definition['meaning_uz'])}\n"
 
     # 2. Kitobdagi o'sha gapdagi mazmuni
     msg_text += f"\n📑 <b>Kitobdagi gaplar va ularning o'zbekcha mazmuni:</b>\n\n"
