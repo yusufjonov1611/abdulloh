@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Kitobdagi asosiy yuridik va umumiy so'zlarning qomusiy ma'nolari (izohlari).
+Kitobdagi barcha so'zlarning asl ma'nolari (qomusiy ta'riflari)
+va kitobdagi gaplarning o'zbekcha mazmunini aniqlash moduli.
 """
 
+import urllib.request
+import urllib.parse
+import json
+from functools import lru_cache
+
+# Asosiy yuridik terminlarning professional qomusiy lug'ati
 VOCABULARY_DEFINITIONS = {
     "judge": {
         "meaning_uz": "Sudya — sud majlislarida ishlarni ko'rib chiquvchi, dalillarni baholovchi va yakuniy qonuniy qaror (hukm) chiqaruvchi mansabdor shaxs.",
@@ -60,6 +67,10 @@ VOCABULARY_DEFINITIONS = {
         "meaning_uz": "Javobgar / Sudlanuvchi — sudda o'ziga nisbatan da'vo qo'zg'atilgan yoki ayblanayotgan tomon.",
         "meaning_en": "A person or company against whom a claim or criminal charge is brought in court."
     },
+    "dispute": {
+        "meaning_uz": "Nizo / Bahs — ikki yoki undan ortiq tomon o'rtasidagi qonuniy huquq yoki majburiyatlar yuzasidan kelib chiqqan ixtilof.",
+        "meaning_en": "A disagreement or argument between parties, especially one resulting in legal proceedings."
+    },
     "pleading": {
         "meaning_uz": "Ishni himoya qilish — sudda o'z dalillari va pozitsiyasini himoya qilib ko'rsatma berish.",
         "meaning_en": "The formal statement of the cause of an action or defence in court."
@@ -99,17 +110,110 @@ VOCABULARY_DEFINITIONS = {
     "breach": {
         "meaning_uz": "Buzish — qonuniy majburiyat yoki shartnoma shartlarini buzish.",
         "meaning_en": "An act of breaking or failing to observe a law, agreement, or code of conduct."
+    },
+    "breach of contract": {
+        "meaning_uz": "Shartnomani buzish — shartnomada belgilangan majburiyatlarni bajarmaslik yoki lozim darajada bajarmaslik.",
+        "meaning_en": "A failure, without legal excuse, to perform any promise that forms all or part of a contract."
+    },
+    "obligation": {
+        "meaning_uz": "Majburiyat — qonun yoki shartnoma talabiga binoan biror harakatni amalga oshirish yoki undan tiyilish burchi.",
+        "meaning_en": "A legal or moral duty that an individual is bound to perform."
+    },
+    "agreement": {
+        "meaning_uz": "Kelishuv / Bitim — ikki yoki undan ortiq shaxslarning birgalikdagi huquq va majburiyatlar bo'yicha mushtarak irodasi.",
+        "meaning_en": "A negotiated and usually legally enforceable understanding between two or more parties."
+    },
+    "remedy": {
+        "meaning_uz": "Huquqiy himoya vositasi — huquqi buzilgan shaxsga sud tomonidan beriladigan tovon yoki chora (masalan, zararni qoplash, taqiq qo'yish).",
+        "meaning_en": "The means with which a court of law enforces a right, imposes a penalty, or makes another court order to impose its will."
+    },
+    "injunction": {
+        "meaning_uz": "Sud taqiqi (Injunction) — sud tomonidan ma'lum bir harakatni bajarishni taqiqlovchi yoki majburlovchi rasmiy farmoyish.",
+        "meaning_en": "An authoritative judicial warning or order restraining a person from beginning or continuing an action."
     }
 }
 
-def get_word_definition(word: str) -> dict:
-    """So'zning ta'rifini qaytaradi (agar mavjud bo'lsa)."""
+@lru_cache(maxsize=1500)
+def translate_sentence_to_uzbek(sentence: str) -> str:
+    """
+    Kitobdagi gapning o'zbekcha aniq kontekstdagi tarjimasi va mazmunini qaytaradi.
+    """
+    s = sentence.strip()
+    if not s:
+        return ""
+    url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=uz&dt=t&q=' + urllib.parse.quote(s)
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            translated = "".join([item[0] for item in data[0] if item and item[0]])
+            return translated.strip()
+    except Exception:
+        return ""
+
+@lru_cache(maxsize=1000)
+def fetch_online_word_definition(word: str) -> dict:
+    """
+    Lug'atda bo'lmagan istalgan so'zning asl ma'nosi va so'z turkumlarini avtomatik topadi.
+    """
     w = word.strip().lower()
+    if not w:
+        return None
+    url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=uz&dt=t&dt=bd&q=' + urllib.parse.quote(w)
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            translation = "".join([item[0] for item in data[0] if item and item[0]]).strip()
+            
+            parts = []
+            if len(data) > 1 and data[1]:
+                for group in data[1]:
+                    pos = group[0]  # noun, verb, adjective
+                    items = group[1][:3]
+                    parts.append(pos + ": " + ", ".join(items))
+            
+            desc_uz = translation.capitalize()
+            if parts:
+                desc_uz += " (" + "; ".join(parts) + ")"
+                
+            return {
+                "meaning_uz": desc_uz,
+                "meaning_en": f"Original word: \"{word}\""
+            }
+    except Exception:
+        return {
+            "meaning_uz": f"\"{word}\" so'zining asl ma'nosi va tarjimasi",
+            "meaning_en": word
+        }
+
+def get_word_definition(word: str) -> dict:
+    """
+    So'zning asl qomusiy ma'nosini qaytaradi.
+    Avval professional yuridik bazadan qidiradi, bo'lmasa avtomatik lug'atdan oladi.
+    Shu tariqa istalgan so'z uchun asl ma'no doimo chiqadi.
+    """
+    if not word:
+        return None
+    w = word.strip().lower()
+    
+    # 1. Aniq moslik
     if w in VOCABULARY_DEFINITIONS:
         return VOCABULARY_DEFINITIONS[w]
-    # Agar ko'plik yoki boshqa shaklda bo'lsa
+    
+    # 2. Zamon / ko'plik qo'shimchasi bilan
     if w.endswith("s") and w[:-1] in VOCABULARY_DEFINITIONS:
         return VOCABULARY_DEFINITIONS[w[:-1]]
     if w.endswith("es") and w[:-2] in VOCABULARY_DEFINITIONS:
         return VOCABULARY_DEFINITIONS[w[:-2]]
-    return None
+    if w.endswith("ed") and w[:-1] in VOCABULARY_DEFINITIONS:
+        return VOCABULARY_DEFINITIONS[w[:-1]]
+    if w.endswith("ed") and w[:-2] in VOCABULARY_DEFINITIONS:
+        return VOCABULARY_DEFINITIONS[w[:-2]]
+    if w.endswith("ing") and w[:-3] in VOCABULARY_DEFINITIONS:
+        return VOCABULARY_DEFINITIONS[w[:-3]]
+    if w.endswith("ing") and (w[:-3] + "e") in VOCABULARY_DEFINITIONS:
+        return VOCABULARY_DEFINITIONS[w[:-3] + "e"]
+
+    # 3. Agar bazada bo'lmasa, onlayn lug'at orqali barcha so'zlar uchun asl ma'nosini olish
+    return fetch_online_word_definition(w)
