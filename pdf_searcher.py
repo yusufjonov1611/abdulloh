@@ -3,7 +3,19 @@ import io
 import re
 import unicodedata
 from typing import List, Dict, Any, Optional
-from vocabulary import get_word_definition
+from vocabulary import get_word_definition, translate_sentence_to_uzbek
+
+def _enrich_results_with_meaning(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Har bir topilgan gapning o'zbekcha mazmuni va tarjimasini qo'shadi.
+    """
+    for item in results:
+        sentence = item.get("sentence", "")
+        if sentence:
+            item["sentence_meaning"] = translate_sentence_to_uzbek(sentence)
+        else:
+            item["sentence_meaning"] = ""
+    return results
 
 def normalize_text(text: str) -> str:
     """
@@ -246,9 +258,10 @@ def search_word_in_pdf(
     if first_attempt["total"] > 0:
         doc.close()
         definition = get_word_definition(clean_q)
+        results = _enrich_results_with_meaning(first_attempt["results"])
         return {
             "total": first_attempt["total"],
-            "results": first_attempt["results"],
+            "results": results,
             "query": clean_q,
             "matched_query": clean_q,
             "definition": definition
@@ -261,9 +274,10 @@ def search_word_in_pdf(
         if var_attempt["total"] > 0:
             doc.close()
             definition = get_word_definition(variant) or get_word_definition(clean_q)
+            results = _enrich_results_with_meaning(var_attempt["results"])
             return {
                 "total": var_attempt["total"],
-                "results": var_attempt["results"],
+                "results": results,
                 "query": clean_q,
                 "matched_query": variant,
                 "definition": definition
@@ -278,12 +292,14 @@ def search_word_in_pdf(
                 sub_attempt = _search_single_term(doc, sub_phrase, max_results)
                 if sub_attempt["total"] > 0:
                     doc.close()
+                    definition = get_word_definition(sub_phrase)
+                    results = _enrich_results_with_meaning(sub_attempt["results"])
                     return {
                         "total": sub_attempt["total"],
-                        "results": sub_attempt["results"],
+                        "results": results,
                         "query": clean_q,
                         "matched_query": sub_phrase,
-                        "definition": None
+                        "definition": definition
                     }
 
     doc.close()
