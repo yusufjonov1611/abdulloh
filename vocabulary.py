@@ -2,6 +2,7 @@
 """
 Kitobdagi barcha so'zlarning asl ma'nolari (qomusiy ta'riflari)
 va kitobdagi gaplarning o'zbekcha mazmunini aniqlash moduli.
+Inglizcha va o'zbekcha qomusiy ta'riflarni aniq taqdim etadi.
 """
 
 import urllib.request
@@ -9,7 +10,7 @@ import urllib.parse
 import json
 from functools import lru_cache
 
-# Asosiy yuridik terminlarning professional qomusiy lug'ati
+# Asosiy yuridik va ilmiy terminlarning professional qomusiy lug'ati
 VOCABULARY_DEFINITIONS = {
     "judge": {
         "meaning_uz": "Sudya — sud majlislarida ishlarni ko'rib chiquvchi, dalillarni baholovchi va yakuniy qonuniy qaror (hukm) chiqaruvchi mansabdor shaxs.",
@@ -144,7 +145,7 @@ def translate_sentence_to_uzbek(sentence: str) -> str:
     url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=uz&dt=t&q=' + urllib.parse.quote(s)
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     try:
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             translated = "".join([item[0] for item in data[0] if item and item[0]])
             return translated.strip()
@@ -154,66 +155,84 @@ def translate_sentence_to_uzbek(sentence: str) -> str:
 @lru_cache(maxsize=1000)
 def fetch_online_word_definition(word: str) -> dict:
     """
-    Lug'atda bo'lmagan istalgan so'zning asl ma'nosi va so'z turkumlarini avtomatik topadi.
+    Istalgan so'z yoki iboraning inglizcha va o'zbekcha asl qomusiy ma'nosini
+    aniq, ketma-ket va tushunarli qilib oladi.
     """
     w = word.strip().lower()
     if not w:
         return None
-    url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=uz&dt=t&dt=bd&q=' + urllib.parse.quote(w)
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+
+    # 1. O'zbekcha ma'nosi va so'z turkumlari
+    meaning_uz = ""
+    url_uz = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=uz&dt=t&dt=bd&q=' + urllib.parse.quote(w)
+    req_uz = urllib.request.Request(url_uz, headers={'User-Agent': 'Mozilla/5.0'})
     try:
-        with urllib.request.urlopen(req, timeout=4) as resp:
+        with urllib.request.urlopen(req_uz, timeout=5) as resp:
             data = json.loads(resp.read().decode('utf-8'))
-            translation = "".join([item[0] for item in data[0] if item and item[0]]).strip()
-            
+            primary = data[0][0][0].strip().capitalize() if data and data[0] else ""
             parts = []
             if len(data) > 1 and data[1]:
                 for group in data[1]:
                     pos = group[0]  # noun, verb, adjective
                     items = group[1][:3]
                     parts.append(pos + ": " + ", ".join(items))
-            
-            desc_uz = translation.capitalize()
             if parts:
-                desc_uz += " (" + "; ".join(parts) + ")"
-                
-            return {
-                "meaning_uz": desc_uz,
-                "meaning_en": f"Original word: \"{word}\""
-            }
+                meaning_uz = primary + " (" + "; ".join(parts) + ")"
+            else:
+                meaning_uz = primary
     except Exception:
-        return {
-            "meaning_uz": f"\"{word}\" so'zining asl ma'nosi va tarjimasi",
-            "meaning_en": word
-        }
+        meaning_uz = word.capitalize()
+
+    # 2. Inglizcha qomusiy ta'rifi (English Definition)
+    meaning_en = ""
+    url_en = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=en&dt=md&dt=t&q=' + urllib.parse.quote(w)
+    req_en = urllib.request.Request(url_en, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        with urllib.request.urlopen(req_en, timeout=5) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            if len(data) > 12 and data[12]:
+                defs = []
+                for entry in data[12]:
+                    pos = entry[0]
+                    for d in entry[1][:1]:
+                        defs.append(f"({pos}) {d[0]}")
+                meaning_en = " ".join(defs)
+    except Exception:
+        meaning_en = ""
+
+    return {
+        "meaning_uz": meaning_uz or word.capitalize(),
+        "meaning_en": meaning_en
+    }
 
 def get_word_definition(word: str) -> dict:
     """
-    So'zning asl qomusiy ma'nosini qaytaradi.
-    Avval professional yuridik bazadan qidiradi, bo'lmasa avtomatik lug'atdan oladi.
-    Shu tariqa istalgan so'z uchun asl ma'no doimo chiqadi.
+    So'zning asl qomusiy ma'nosini qaytaradi (Inglizcha va O'zbekcha).
+    Avval professional yuridik bazadan qidiradi, bo'lmasa to'liq onlayn ta'rif oladi.
     """
     if not word:
         return None
     w = word.strip().lower()
-    
-    # 1. Aniq moslik
+
+    # 1. Aniq moslik bazada
     if w in VOCABULARY_DEFINITIONS:
         return VOCABULARY_DEFINITIONS[w]
-    
-    # 2. Zamon / ko'plik qo'shimchasi bilan
-    if w.endswith("s") and w[:-1] in VOCABULARY_DEFINITIONS:
-        return VOCABULARY_DEFINITIONS[w[:-1]]
-    if w.endswith("es") and w[:-2] in VOCABULARY_DEFINITIONS:
-        return VOCABULARY_DEFINITIONS[w[:-2]]
-    if w.endswith("ed") and w[:-1] in VOCABULARY_DEFINITIONS:
-        return VOCABULARY_DEFINITIONS[w[:-1]]
-    if w.endswith("ed") and w[:-2] in VOCABULARY_DEFINITIONS:
-        return VOCABULARY_DEFINITIONS[w[:-2]]
-    if w.endswith("ing") and w[:-3] in VOCABULARY_DEFINITIONS:
-        return VOCABULARY_DEFINITIONS[w[:-3]]
-    if w.endswith("ing") and (w[:-3] + "e") in VOCABULARY_DEFINITIONS:
-        return VOCABULARY_DEFINITIONS[w[:-3] + "e"]
 
-    # 3. Agar bazada bo'lmasa, onlayn lug'at orqali barcha so'zlar uchun asl ma'nosini olish
+    # 2. Zamon / ko'plik qo'shimchalari bo'yicha bazadan tekshirish
+    stems = []
+    if w.endswith("ies") and len(w) > 4: stems.append(w[:-3] + "y")
+    if w.endswith("es") and len(w) > 3: stems.extend([w[:-2], w[:-1]])
+    if w.endswith("s") and len(w) > 3: stems.append(w[:-1])
+    if w.endswith("ed") and len(w) > 3: stems.extend([w[:-2], w[:-1]])
+    if w.endswith("ing") and len(w) > 4: stems.extend([w[:-3], w[:-3] + "e"])
+
+    for s in stems:
+        if s in VOCABULARY_DEFINITIONS:
+            base_def = VOCABULARY_DEFINITIONS[s]
+            return {
+                "meaning_uz": f"{base_def['meaning_uz']}",
+                "meaning_en": f"Form of '{s}': {base_def['meaning_en']}"
+            }
+
+    # 3. Istalgan so'z uchun to'liq onlayn qomusiy ta'rif
     return fetch_online_word_definition(w)
