@@ -1,20 +1,68 @@
+# -*- coding: utf-8 -*-
+"""
+PDF kitoblar ichidan so'z va iboralarni sun'iy intellekt (AI) va
+morfologik tahlil asosida mukammal va tezkor qidiruv moduli.
+
+Xususiyatlari:
+1. Aniq moslik (Exact match).
+2. Morfologik va grammatik tahlil (birlik/ko'plik, fe'l zamonlari: image <-> images, agree <-> agreement).
+3. Noaniq va imlo xatolarini tuzatish (Fuzzy matching / Levenshtein).
+4. Bir martalik tezkor guruhli tarjima (Batch translation) — qidiruv 1-2 soniyada chiqadi.
+"""
+
 import pymupdf
 import io
 import re
 import unicodedata
-from typing import List, Dict, Any, Optional
-from vocabulary import get_word_definition, translate_sentence_to_uzbek
+import difflib
+import urllib.request
+import urllib.parse
+import json
+from functools import lru_cache
+from typing import List, Dict, Any, Optional, Set
+from vocabulary import get_word_definition
+
+def _batch_translate_sentences_to_uzbek(sentences: List[str]) -> List[str]:
+    """
+    Topilgan barcha gaplarni bitta tezkor so'rovda o'zbek tiliga tarjima qiladi (1-2 soniya).
+    """
+    if not sentences:
+        return []
+
+    # Bo'sh yoki juda qisqa bo'lmagan gaplar
+    clean_sents = [s.strip() for s in sentences]
+    if not any(clean_sents):
+        return ["" for _ in sentences]
+
+    delimiter = "\n<<==>>\n"
+    combined = delimiter.join(clean_sents)
+
+    url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=uz&dt=t&q=' + urllib.parse.quote(combined)
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            full_translated = "".join([item[0] for item in data[0] if item and item[0]])
+            parts = full_translated.split("<<==>>")
+            results = [p.strip() for p in parts]
+            if len(results) == len(sentences):
+                return results
+            # Agar bo'linishda moslik bo'lmasa
+            while len(results) < len(sentences):
+                results.append("")
+            return results[:len(sentences)]
+    except Exception:
+        # Fallback: agar internet xatosi bo'lsa
+        return ["" for _ in sentences]
 
 def _enrich_results_with_meaning(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Har bir topilgan gapning o'zbekcha mazmuni va tarjimasini qo'shadi.
+    Har bir topilgan gapning o'zbekcha mazmuni va tarjimasini tezkor qo'shadi.
     """
-    for item in results:
-        sentence = item.get("sentence", "")
-        if sentence:
-            item["sentence_meaning"] = translate_sentence_to_uzbek(sentence)
-        else:
-            item["sentence_meaning"] = ""
+    sentences = [item.get("sentence", "") for item in results]
+    meanings = _batch_translate_sentences_to_uzbek(sentences)
+    for idx, item in enumerate(results):
+        item["sentence_meaning"] = meanings[idx] if idx < len(meanings) else ""
     return results
 
 def normalize_text(text: str) -> str:
@@ -49,7 +97,11 @@ def clean_search_query(query: str) -> str:
 
 def generate_word_variants(query: str) -> List[str]:
     """
-    So'zning boshqa zamon, ko'plik/birlik va asosiy shakllarini hosil qiladi.
+    So'zning boshqa zamon, ko'plik/birlik, o'zak va derivatsion shakllarini hosil qiladi.
+    Masalan:
+    image -> images, imaging, imaged
+    images -> image, imaging, imaged
+    agree -> agreement, agreed, agreeing, agrees
     """
     w = clean_search_query(query).lower()
     variants = []
@@ -66,10 +118,12 @@ def generate_word_variants(query: str) -> List[str]:
     if w.endswith("ies") and len(w) > 4:
         add_var(w[:-3] + "y")
     elif w.endswith("es") and len(w) > 3:
-        add_var(w[:-1])
         add_var(w[:-2])
+        add_var(w[:-1])
     elif w.endswith("s") and len(w) > 3:
         add_var(w[:-1])
+        if w.endswith("ss"):
+            add_var(w)
     else:
         add_var(w + "s")
         if w.endswith(("s", "x", "z", "ch", "sh")):
@@ -80,13 +134,13 @@ def generate_word_variants(query: str) -> List[str]:
     # 2. Fe'l zamonlari (-ing, -ed, -d)
     if w.endswith("ing") and len(w) > 4:
         stem = w[:-3]
-        add_var(stem + "e")  # judging -> judge, practising -> practise
+        add_var(stem + "e")  # judging -> judge, imaging -> image
         add_var(stem)        # training -> train, hearing -> hear
         if len(stem) > 2 and stem[-1] == stem[-2]:
             add_var(stem[:-1])  # running -> run
     elif w.endswith("ed") and len(w) > 3:
         stem = w[:-2]
-        add_var(w[:-1])      # judged -> judge, practised -> practise
+        add_var(w[:-1])      # judged -> judge, imaged -> image
         add_var(stem)        # trained -> train
         if w.endswith("ied") and len(w) > 4:
             add_var(w[:-3] + "y")
@@ -98,8 +152,25 @@ def generate_word_variants(query: str) -> List[str]:
         else:
             add_var(w + "ed")
             add_var(w + "ing")
+            if len(w) >= 3 and w[-1] not in "aeiou" and w[-2] in "aeiou" and w[-3] not in "aeiou":
+                add_var(w + w[-1] + "ed")
+                add_var(w + w[-1] + "ing")
 
-    # 3. Noto'g'ri fe'llar (Irregular verbs)
+    # 3. Yasalma qo'shimchalar (Derivations: -ment, -tion, -able, -ant, -or)
+    if w.endswith("ment") and len(w) > 6:
+        add_var(w[:-4])
+    elif not w.endswith("ment"):
+        add_var(w + "ment")
+
+    if w.endswith("tion") and len(w) > 6:
+        add_var(w[:-4] + "te")
+        add_var(w[:-3])
+    if w.endswith("ant") and len(w) > 5:
+        add_var(w[:-3])
+    elif w.endswith("or") and len(w) > 5:
+        add_var(w[:-2])
+
+    # 4. Noto'g'ri fe'llar (Irregular verbs)
     irregulars = {
         "go": ["went", "gone", "going", "goes"],
         "see": ["saw", "seen", "seeing", "sees"],
@@ -136,7 +207,6 @@ def extract_best_sentence(block_text: str, query: str) -> str:
     if not clean_block:
         return ""
 
-    # Gap chegaralari bo'yicha ajratish
     sentences = re.split(r'(?<=[.!?])\s+', clean_block)
     matched_sentences = []
     q_lower = query.lower()
@@ -149,7 +219,6 @@ def extract_best_sentence(block_text: str, query: str) -> str:
 
     if matched_sentences:
         res = " ".join(matched_sentences)
-        # Agar gap juda qisqa bo'lsa (masalan, lug'at ro'yxatida) to'liq blokni qaytaramiz
         if len(res.split()) < 7 and len(clean_block.split()) <= 45:
             return clean_block
         return res
@@ -208,7 +277,6 @@ def _search_single_term(doc, term: str, max_results: int = 6) -> Dict[str, Any]:
                             "sentence": sentence
                         })
 
-        # Agar bloklarda topilmasa, lekin butun sahifa matnida (bloklararo) bo'lishi mumkin
         if not page_matched:
             norm_page = normalize_text(page.get_text("text"))
             found_on_page = False
@@ -238,22 +306,38 @@ def _search_single_term(doc, term: str, max_results: int = 6) -> Dict[str, Any]:
         "results": results
     }
 
+def _extract_all_words_from_doc(doc) -> Set[str]:
+    """
+    Kitobdagi barcha mavjud unikal so'zlar to'plamini ajratib oladi (tezkor).
+    """
+    unique_words = set()
+    for page in doc:
+        text = page.get_text("text")
+        if text:
+            words = re.findall(r'\b[a-zA-Z]{3,}\b', text)
+            for w in words:
+                unique_words.add(w.lower())
+    return unique_words
+
 def search_word_in_pdf(
     pdf_path: str,
     query: str,
-    max_results: int = 6
+    max_results: int = 5
 ) -> Dict[str, Any]:
     """
     Berilgan so'z yoki iborani PDF ichidan mukammal qidiradi.
-    Sahifa raqami, kontekst iqtibosi va qomusiy ma'nosini qaytaradi.
+    1. Aniq moslik.
+    2. Morfologik va grammatik variantlar (image -> images, agree -> agreement va h.k.).
+    3. AI / Fuzzy yaqin o'xshash so'zlar.
+    Natija: Sahifa raqami, kontekst iqtibosi va har bir gapning o'zbekcha mazmuni.
     """
     clean_q = clean_search_query(query)
     if not clean_q:
-        return {"total": 0, "results": [], "query": query, "matched_query": query, "definition": None}
+        return {"total": 0, "results": [], "query": query, "matched_query": query, "definition": None, "note": ""}
 
     doc = pymupdf.open(pdf_path)
 
-    # 1. To'g'ridan-to'g'ri qidiruv (aniq kiritilgan so'z yoki ibora)
+    # 1. Aniq kiritilgan so'z yoki ibora bo'yicha to'g'ridan-to'g'ri qidiruv
     first_attempt = _search_single_term(doc, clean_q, max_results)
     if first_attempt["total"] > 0:
         doc.close()
@@ -264,43 +348,67 @@ def search_word_in_pdf(
             "results": results,
             "query": clean_q,
             "matched_query": clean_q,
-            "definition": definition
+            "definition": definition,
+            "note": ""
         }
 
-    # 2. Zamon va shakllari bo'yicha qidiruv (birlik, ko'plik, fe'l shakllari)
+    # 2. Morfologik va grammatik shakllari (birlik, ko'plik, zamon, derivatsiyalar)
     variants = generate_word_variants(clean_q)
     for variant in variants[1:]:
         var_attempt = _search_single_term(doc, variant, max_results)
         if var_attempt["total"] > 0:
             doc.close()
-            definition = get_word_definition(variant) or get_word_definition(clean_q)
+            definition = get_word_definition(clean_q) or get_word_definition(variant)
             results = _enrich_results_with_meaning(var_attempt["results"])
             return {
                 "total": var_attempt["total"],
                 "results": results,
                 "query": clean_q,
                 "matched_query": variant,
-                "definition": definition
+                "definition": definition,
+                "note": f"So'zning kitobdagi shakli: <b>'{variant}'</b>"
             }
 
-    # 3. Agar ko'p so'zli jumla bo'lsa va to'liq topilmasa, qismlarini sinab ko'rish
+    # 3. Ko'p so'zli jumla bo'lsa, qismlarini (sub-phrases) tekshirish
     words = clean_q.split()
-    if len(words) >= 4:
-        for sub_len in [4, 3]:
+    if len(words) >= 3:
+        for sub_len in [3, 2]:
             if len(words) >= sub_len:
                 sub_phrase = " ".join(words[:sub_len])
                 sub_attempt = _search_single_term(doc, sub_phrase, max_results)
                 if sub_attempt["total"] > 0:
                     doc.close()
-                    definition = get_word_definition(sub_phrase)
+                    definition = get_word_definition(clean_q) or get_word_definition(sub_phrase)
                     results = _enrich_results_with_meaning(sub_attempt["results"])
                     return {
                         "total": sub_attempt["total"],
                         "results": results,
                         "query": clean_q,
                         "matched_query": sub_phrase,
-                        "definition": definition
+                        "definition": definition,
+                        "note": f"Jumlaning kitobdagi asosiy qismi: <b>'{sub_phrase}'</b>"
                     }
+
+    # 4. AI / Fuzzy yaqin o'xshash so'zlar qidiruvi
+    all_book_words = _extract_all_words_from_doc(doc)
+    q_target = clean_q.lower()
+    close_matches = difflib.get_close_matches(q_target, list(all_book_words), n=3, cutoff=0.72)
+
+    if close_matches:
+        for matched_word in close_matches:
+            fuzzy_attempt = _search_single_term(doc, matched_word, max_results)
+            if fuzzy_attempt["total"] > 0:
+                doc.close()
+                definition = get_word_definition(clean_q)
+                results = _enrich_results_with_meaning(fuzzy_attempt["results"])
+                return {
+                    "total": fuzzy_attempt["total"],
+                    "results": results,
+                    "query": clean_q,
+                    "matched_query": matched_word,
+                    "definition": definition,
+                    "note": f"Kitobda unga eng yaqin mos keluvchi shakl: <b>'{matched_word}'</b>"
+                }
 
     doc.close()
     return {
@@ -308,7 +416,8 @@ def search_word_in_pdf(
         "results": [],
         "query": clean_q,
         "matched_query": clean_q,
-        "definition": get_word_definition(clean_q)
+        "definition": get_word_definition(clean_q),
+        "note": ""
     }
 
 def get_total_pages(pdf_path: str) -> int:
