@@ -760,11 +760,12 @@ async def search_handler(message: types.Message):
         msg = f"❌ <b>'{html.escape(query)}'</b> so'zi (va shakllari) 📚 <b>\"{html.escape(book_name)}\"</b> kitobidan topilmadi.\n"
         if definition:
             msg += (
-                f"\n💡 <b>So'zning umumiy ma'nosi (Izoh):</b>\n"
+                f"\n📖 <b>Asl so'zning ma'nosi:</b>\n"
                 f"🇺🇿 {html.escape(definition['meaning_uz'])}\n"
-                f"🇬🇧 <i>{html.escape(definition['meaning_en'])}</i>\n\n"
             )
-        msg += "So'zni to'g'ri yozganingizni tekshirib, qaytadan urinib ko'ring."
+            if definition.get('meaning_en') and not definition['meaning_en'].startswith('Original word'):
+                msg += f"🇬🇧 <i>{html.escape(definition['meaning_en'])}</i>\n"
+        msg += "\nSo'zni to'g'ri yozganingizni tekshirib, qaytadan urinib ko'ring."
         await wait_msg.edit_text(msg, parse_mode="HTML")
         return
 
@@ -777,19 +778,29 @@ async def search_handler(message: types.Message):
     else:
         msg_text += f"✅ <b>'{html.escape(query)}'</b> so'zi ushbu kitobda jami <b>{total}</b> marta uchradi.\n"
 
+    # 1. Asl so'zning ma'nosi
     if definition:
         msg_text += (
-            f"\n💡 <b>So'zning ma'nosi (Izoh):</b>\n"
+            f"\n📖 <b>Asl so'zning ma'nosi:</b>\n"
             f"🇺🇿 {html.escape(definition['meaning_uz'])}\n"
-            f"🇬🇧 <i>{html.escape(definition['meaning_en'])}</i>\n"
         )
+        if definition.get('meaning_en') and not definition['meaning_en'].startswith('Original word'):
+            msg_text += f"🇬🇧 <i>{html.escape(definition['meaning_en'])}</i>\n"
 
-    msg_text += f"\n📖 <b>Kitobdagi izohi va mazmuni:</b>\n\n"
+    # 2. Kitobdagi o'sha gapdagi mazmuni
+    msg_text += f"\n📑 <b>Kitobdagi gaplar va ularning o'zbekcha mazmuni:</b>\n\n"
 
     for item in results:
         p = item["page"]
         sentence = html.escape(item["sentence"])
-        msg_text += f"📄 <b>\"{html.escape(book_name)}\"</b> ({p}-sahifa):\n<blockquote>\"{sentence}\"</blockquote>\n\n"
+        meaning = item.get("sentence_meaning")
+
+        msg_text += f"📄 <b>\"{html.escape(book_name)}\"</b> ({p}-sahifa):\n"
+        msg_text += f"<blockquote>\"{sentence}\"</blockquote>"
+        if meaning:
+            msg_text += f"\n💡 <b>Ushbu gapdagi ma'nosi (Mazmuni):</b>\n<blockquote><i>\"{html.escape(meaning)}\"</i></blockquote>\n\n"
+        else:
+            msg_text += "\n\n"
 
     if len(msg_text) > 4000:
         msg_text = msg_text[:3990] + "...\n\n<i>(Natijalar ko'pligi sababli dastlabkilari ko'rsatildi)</i>"
