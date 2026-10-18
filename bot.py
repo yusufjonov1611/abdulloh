@@ -18,7 +18,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BufferedInputFile, FSInputFile,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    BotCommand
 )
 
 from pdf_searcher import search_word_in_pdf, get_total_pages
@@ -27,7 +28,8 @@ from data_manager import (
     SUPER_ADMIN_ID, is_super_admin, is_admin,
     get_second_admin, set_second_admin, remove_second_admin,
     get_channels, add_channel, remove_channel,
-    register_user, get_users_count, get_users_list,
+    register_user, increment_user_searches, get_all_user_ids,
+    get_users_count, get_users_list, get_usage_statistics,
     get_all_books, get_active_book, set_active_book,
     add_new_book, delete_book
 )
@@ -53,6 +55,11 @@ class AdminStates(StatesGroup):
     waiting_for_second_admin_id = State()
     waiting_for_book_file = State()
     waiting_for_book_name = State()
+    waiting_for_broadcast_msg = State()
+    waiting_for_reply_user_text = State()
+
+class UserStates(StatesGroup):
+    waiting_for_help_msg = State()
 
 # --- Obunani tekshirish yordamchisi ---
 async def check_user_subscriptions(bot: Bot, user_id: int):
@@ -154,6 +161,284 @@ async def list_books_command(message: types.Message):
 
     await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
 
+# ==================== /statistika BUYRUG'I (Faqat Adminlar uchun) ====================
+@dp.message(Command("statistika"))
+async def statistika_command(message: types.Message):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ Bu buyruq faqat bot adminlari uchun mo'ljallangan.")
+        return
+
+    stats = get_usage_statistics()
+    books = get_all_books()
+    active_b = get_active_book()
+    active_name = active_b['name'] if active_b else "Mavjud emas"
+
+    text = (
+        "📊 <b>BOT FOYDALANISH STATISTIKASI</b>\n\n"
+        f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} nafar\n"
+        f"🔥 <b>Qidiruv qilgan faol a'zolar:</b> {stats['active_users']} nafar\n"
+        f"🔍 <b>Jami amalga oshirilgan qidiruvlar:</b> {stats['total_searches']} ta\n"
+        f"📚 <b>Jami kitoblar:</b> {len(books)} ta\n"
+        f"📖 <b>Faol kitob:</b> {html.escape(active_name)}\n\n"
+        "🏆 <b>Eng faol foydalanuvchilar (Top-10):</b>\n"
+    )
+
+    if stats["top_users"]:
+        for idx, u in enumerate(stats["top_users"], 1):
+            uname = f"@{u['username']}" if u['username'] else "username yo'q"
+            text += f"{idx}. <b>{html.escape(u['name'])}</b> — <b>{u['searches']}</b> ta qidiruv (ID: <code>{u['id']}</code>, {uname})\n"
+    else:
+        text += "<i>Hozircha qidiruvlar amalga oshirilmagan.</i>\n"
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Barcha foydalanuvchilar", callback_data="admin_users")],
+        [InlineKeyboardButton(text="⚙️ Admin panel", callback_data="admin_main")]
+    ])
+    await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+@dp.callback_query(F.data == "admin_stats_btn")
+async def cb_admin_stats(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    stats = get_usage_statistics()
+    books = get_all_books()
+    active_b = get_active_book()
+    active_name = active_b['name'] if active_b else "Mavjud emas"
+
+    text = (
+        "📊 <b>BOT FOYDALANISH STATISTIKASI</b>\n\n"
+        f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} nafar\n"
+        f"🔥 <b>Qidiruv qilgan faol a'zolar:</b> {stats['active_users']} nafar\n"
+        f"🔍 <b>Jami amalga oshirilgan qidiruvlar:</b> {stats['total_searches']} ta\n"
+        f"📚 <b>Jami kitoblar:</b> {len(books)} ta\n"
+        f"📖 <b>Faol kitob:</b> {html.escape(active_name)}\n\n"
+        "🏆 <b>Eng faol foydalanuvchilar (Top-10):</b>\n"
+    )
+    if stats["top_users"]:
+        for idx, u in enumerate(stats["top_users"], 1):
+            uname = f"@{u['username']}" if u['username'] else "username yo'q"
+            text += f"{idx}. <b>{html.escape(u['name'])}</b> — <b>{u['searches']}</b> ta qidiruv (ID: <code>{u['id']}</code>, {uname})\n"
+    else:
+        text += "<i>Hozircha qidiruvlar amalga oshirilmagan.</i>\n"
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin_main")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+# ==================== /yordam BUYRUG'I ====================
+@dp.message(Command("yordam"))
+async def yordam_command(message: types.Message, state: FSMContext):
+    user = message.from_user
+    user_id = user.id
+
+    if is_admin(user_id):
+        # Admin uchun to'liq yordam va boshqaruv ko'rsatmasi
+        text = (
+            "👮‍♂️ <b>ADMIN YORDAM VA BOSHQARUV BO'LIMI:</b>\n\n"
+            "Siz bot adminisiz! Siz quyidagi imkoniyatlarga egasiz:\n"
+            "• /admin — Parol (<code>12@$</code>) orqali to'liq admin panelga kirish\n"
+            "• /statistika — Foydalanuvchilar va ularning qidiruv faolligi statistikasi\n"
+            "• /reklama — Barcha foydalanuvchilarga xabar/e'lon/reklama yuborish\n"
+            "• /kitoblar — Kitoblarni ko'rish, yangi PDF yuklash va almashtirish\n"
+            "• /yukla — 60 MB gacha bo'lgan kitoblarni havola orqali yuklash\n\n"
+            "💡 <i>Agar foydalanuvchilar /yordam orqali murojaat yoki shikoyat yuborishsa, "
+            "u to'g'ridan-to'g'ri sizga xabar bo'lib keladi va uning ostidagi 'Javob berish' "
+            "tugmasi orqali unga bevosita javob qaytarishingiz mumkin!</i>"
+        )
+        await message.answer(text, parse_mode="HTML")
+    else:
+        # Oddiy foydalanuvchi uchun murojaat yuborish holati
+        await state.set_state(UserStates.waiting_for_help_msg)
+        await message.answer(
+            "✍️ <b>Admin bilan bog'lanish va Yordam:</b>\n\n"
+            "Savolingiz, taklifingiz yoki botdagi muammo haqida batafsil yozib yuboring.\n"
+            "Xabaringiz to'g'ridan-to'g'ri bot adminiga yetkaziladi va tez orada sizga javob qaytariladi.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_user_help")]
+            ])
+        )
+
+@dp.callback_query(F.data == "cancel_user_help")
+async def cb_cancel_user_help(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Murojaat bekor qilindi.")
+
+@dp.message(UserStates.waiting_for_help_msg)
+async def process_user_help_message(message: types.Message, state: FSMContext):
+    user = message.from_user
+    msg_text = message.text or message.caption or "(Matnsiz fayl/media)"
+    username_str = f"@{user.username}" if user.username else "username yo'q"
+
+    # Adminlarga xabar yuborish
+    admin_notif = (
+        f"📩 <b>YANGI MUROJAAT / YORDAM SO'ROVI:</b>\n\n"
+        f"👤 <b>Foydalanuvchi:</b> {html.escape(user.full_name)}\n"
+        f"🆔 <b>ID:</b> <code>{user.id}</code>\n"
+        f"🔗 <b>Username:</b> {username_str}\n\n"
+        f"📝 <b>Murojaat matni:</b>\n"
+        f"<blockquote>{html.escape(msg_text)}</blockquote>"
+    )
+
+    reply_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Foydalanuvchiga javob berish", callback_data=f"reply_to_user:{user.id}")]
+    ])
+
+    # Super adminlar va 2-adminga yuborish
+    target_admins = set(SUPER_ADMIN_IDS)
+    sec_admin = get_second_admin()
+    if sec_admin:
+        target_admins.add(sec_admin)
+
+    sent_any = False
+    for adm_id in target_admins:
+        try:
+            await message.bot.send_message(
+                chat_id=adm_id,
+                text=admin_notif,
+                parse_mode="HTML",
+                reply_markup=reply_keyboard
+            )
+            sent_any = True
+        except Exception as e:
+            logger.warning(f"Adminga murojaat yuborishda xatolik ({adm_id}): {e}")
+
+    await state.clear()
+    if sent_any:
+        await message.answer(
+            "✅ <b>Xabaringiz adminga yetkazildi!</b>\n"
+            "Admin ko'rib chiqib, tez orada sizga javob yozadi. Rahmat!",
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            "✅ Murojaatingiz qabul qilindi va adminlar uchun qayd etildi.",
+            parse_mode="HTML"
+        )
+
+# --- Admin tomonidan foydalanuvchiga javob qaytarish ---
+@dp.callback_query(F.data.startswith("reply_to_user:"))
+async def cb_reply_to_user_prompt(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Sizda ruxsat yo'q!", show_alert=True)
+        return
+
+    target_user_id = callback.data.split("reply_to_user:", 1)[1]
+    await state.update_data(reply_target_user_id=target_user_id)
+    await state.set_state(AdminStates.waiting_for_reply_user_text)
+
+    await callback.message.reply(
+        f"✍️ <b>ID:</b> <code>{target_user_id}</code> bo'lgan foydalanuvchiga yubormoqchi bo'lgan javobingizni yozing:\n\n"
+        f"<i>(Xabaringiz bot orqali to'g'ridan-to'g'ri unga boradi)</i>",
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_reply_user_text)
+async def process_admin_reply_to_user(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    target_user_id = data.get("reply_target_user_id")
+    if not target_user_id:
+        await message.answer("Foydalanuvchi ma'lumotlari topilmadi.")
+        await state.clear()
+        return
+
+    reply_content = message.text or message.caption or ""
+    user_msg = (
+        f"🔔 <b>Bot Adminidan javob keldi:</b>\n\n"
+        f"<blockquote>{html.escape(reply_content)}</blockquote>"
+    )
+
+    try:
+        await message.bot.send_message(
+            chat_id=int(target_user_id),
+            text=user_msg,
+            parse_mode="HTML"
+        )
+        await message.answer(f"✅ Javob ID: <code>{target_user_id}</code> ga muvaffaqiyatli yuborildi!", parse_mode="HTML")
+    except Exception as e:
+        await message.answer(f"❌ Xabarni foydalanuvchiga yuborib bo'lmadi: {e}")
+
+    await state.clear()
+
+# ==================== /reklama BUYRUG'I (Xabar yuborish) ====================
+@dp.message(Command("reklama"))
+async def reklama_command(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
+        await message.answer("❌ Bu buyruq faqat bot adminlari uchun mo'ljallangan.")
+        return
+
+    total_users = get_users_count()
+    await state.set_state(AdminStates.waiting_for_broadcast_msg)
+    await message.answer(
+        f"📢 <b>REKLAMA VA XABAR YUBORISH BO'LIMI:</b>\n\n"
+        f"👥 Hozirgi barcha foydalanuvchilar soni: <b>{total_users}</b> nafar.\n\n"
+        f"Iltimos, barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni (matn, rasm, havola yoki e'lon) yuboring:\n"
+        f"<i>(Bekor qilish uchun /cancel deb yozing)</i>",
+        parse_mode="HTML"
+    )
+
+@dp.callback_query(F.data == "admin_broadcast_btn")
+async def cb_admin_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    total_users = get_users_count()
+    await state.set_state(AdminStates.waiting_for_broadcast_msg)
+    await callback.message.edit_text(
+        f"📢 <b>REKLAMA VA XABAR YUBORISH:</b>\n\n"
+        f"👥 Jami foydalanuvchilar: <b>{total_users}</b> nafar.\n\n"
+        f"Barcha a'zolarga tarqatmoqchi bo'lgan xabaringizni yuboring:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="admin_main")]
+        ])
+    )
+
+@dp.message(AdminStates.waiting_for_broadcast_msg)
+async def process_broadcast_message(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    if message.text and message.text.strip().lower() == "/cancel":
+        await state.clear()
+        await message.answer("❌ Xabar tarqatish bekor qilindi.")
+        await show_admin_panel(message, message.from_user.id)
+        return
+
+    user_ids = get_all_user_ids()
+    if not user_ids:
+        await message.answer("⚠️ Hozircha foydalanuvchilar ro'yxati bo'sh.")
+        await state.clear()
+        return
+
+    wait_msg = await message.answer(f"⏳ <b>{len(user_ids)}</b> nafar foydalanuvchiga xabar yuborilmoqda, kuting...", parse_mode="HTML")
+
+    success_count = 0
+    fail_count = 0
+
+    for uid in user_ids:
+        try:
+            await message.copy_to(chat_id=uid)
+            success_count += 1
+            await asyncio.sleep(0.05)  # Telegram flood limitidan himoya
+        except Exception:
+            fail_count += 1
+
+    await state.clear()
+    await wait_msg.edit_text(
+        f"✅ <b>Xabar tarqatish yakunlandi!</b>\n\n"
+        f"📨 Muvaffaqiyatli yetkazildi: <b>{success_count}</b> ta\n"
+        f"⚠️ Yetib bormadi (bloklagan): <b>{fail_count}</b> ta",
+        parse_mode="HTML"
+    )
+    await show_admin_panel(message, message.from_user.id)
+
 # --- /admin buyrug'i va Parol tekshiruvi ---
 @dp.message(Command("admin"))
 async def admin_command_handler(message: types.Message, state: FSMContext):
@@ -202,6 +487,8 @@ async def show_admin_panel(message_or_call, user_id: int):
     buttons = [
         [InlineKeyboardButton(text="📚 Kitoblar boshqaruvi", callback_data="admin_books")],
         [InlineKeyboardButton(text="📢 Majburiy obuna kanallari", callback_data="admin_channels")],
+        [InlineKeyboardButton(text="📊 Foydalanish statistikasi", callback_data="admin_stats_btn")],
+        [InlineKeyboardButton(text="📨 Reklama / Xabar yuborish", callback_data="admin_broadcast_btn")],
         [InlineKeyboardButton(text="👥 Foydalanuvchilar ro'yxati", callback_data="admin_users")]
     ]
 
@@ -723,6 +1010,7 @@ async def search_handler(message: types.Message):
 
     user = message.from_user
     register_user(user.id, user.first_name, user.username)
+    increment_user_searches(user.id)
 
     is_subbed, unsubbed = await check_user_subscriptions(message.bot, user.id)
     if not is_subbed:
@@ -860,6 +1148,21 @@ async def main():
 
     bot = Bot(token=TOKEN)
     asyncio.create_task(keep_alive_ping())
+
+    # Telegram menyusi uchun buyruqlar ro'yxatini sozlash (/ yozganda chiqadi)
+    try:
+        commands = [
+            BotCommand(command="start", description="Botni ishga tushirish"),
+            BotCommand(command="kitoblar", description="Mavjud kitoblar ro'yxati"),
+            BotCommand(command="yordam", description="Admin bilan bog'lanish / Yordam"),
+            BotCommand(command="statistika", description="Foydalanish statistikasi (Admin)"),
+            BotCommand(command="reklama", description="Xabar tarqatish (Admin)"),
+            BotCommand(command="admin", description="Admin boshqaruv paneli")
+        ]
+        await bot.set_my_commands(commands)
+        print("✅ Telegram buyruqlar menyusi muvaffaqiyatli o'rnatildi!")
+    except Exception as e:
+        logger.warning(f"Buyruqlarni o'rnatishda xatolik: {e}")
 
     print("🤖 Telegram bot ishga tushmoqda...")
     await dp.start_polling(bot)
