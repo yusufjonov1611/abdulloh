@@ -58,6 +58,14 @@ def is_admin(user_id: int) -> bool:
         return True
     return False
 
+def get_all_admin_ids() -> List[int]:
+    """Barcha adminlar (Super adminlar va 2-admin) ID ro'yxatini qaytaradi."""
+    admins = list(SUPER_ADMIN_IDS)
+    sec_id = get_second_admin()
+    if sec_id and int(sec_id) not in admins:
+        admins.append(int(sec_id))
+    return admins
+
 def get_second_admin() -> Optional[int]:
     data = load_data()
     return data.get("second_admin_id")
