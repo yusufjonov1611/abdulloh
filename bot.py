@@ -19,13 +19,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BufferedInputFile, FSInputFile,
     InlineKeyboardMarkup, InlineKeyboardButton,
-    BotCommand
+    BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 )
 
 from pdf_searcher import search_word_in_pdf, get_total_pages
 from web_server import setup_web_app
 from data_manager import (
-    SUPER_ADMIN_ID, is_super_admin, is_admin,
+    SUPER_ADMIN_ID, is_super_admin, is_admin, get_all_admin_ids,
     get_second_admin, set_second_admin, remove_second_admin,
     get_channels, add_channel, remove_channel,
     register_user, increment_user_searches, get_all_user_ids,
@@ -1151,16 +1151,29 @@ async def main():
 
     # Telegram menyusi uchun buyruqlar ro'yxatini sozlash (/ yozganda chiqadi)
     try:
-        commands = [
+        # Oddiy foydalanuvchilar ko'radigan buyruqlar (/ yordam, /start, /kitoblar)
+        user_commands = [
             BotCommand(command="start", description="Botni ishga tushirish"),
             BotCommand(command="kitoblar", description="Mavjud kitoblar ro'yxati"),
-            BotCommand(command="yordam", description="Admin bilan bog'lanish / Yordam"),
+            BotCommand(command="yordam", description="Admin bilan bog'lanish / Yordam")
+        ]
+        await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+
+        # Faqat Adminlar ko'radigan to'liq buyruqlar ro'yxati
+        admin_commands = [
+            BotCommand(command="start", description="Botni ishga tushirish"),
+            BotCommand(command="kitoblar", description="Kitoblar boshqaruvi"),
+            BotCommand(command="yordam", description="Admin yordam bo'limi"),
             BotCommand(command="statistika", description="Foydalanish statistikasi (Admin)"),
             BotCommand(command="reklama", description="Xabar tarqatish (Admin)"),
             BotCommand(command="admin", description="Admin boshqaruv paneli")
         ]
-        await bot.set_my_commands(commands)
-        print("✅ Telegram buyruqlar menyusi muvaffaqiyatli o'rnatildi!")
+        for adm_id in get_all_admin_ids():
+            try:
+                await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=adm_id))
+            except Exception:
+                pass
+        print("✅ Telegram buyruqlar menyusi (foydalanuvchi va admin uchun alohida) muvaffaqiyatli o'rnatildi!")
     except Exception as e:
         logger.warning(f"Buyruqlarni o'rnatishda xatolik: {e}")
 
