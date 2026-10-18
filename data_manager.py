@@ -97,13 +97,81 @@ def remove_channel(channel: str) -> bool:
 def register_user(user_id: int, first_name: str, username: Optional[str]):
     data = load_data()
     uid = str(user_id)
+    if "users" not in data:
+        data["users"] = {}
     if uid not in data["users"]:
         data["users"][uid] = {
             "first_name": first_name or "",
             "username": username or "",
-            "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "joined_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "search_count": 0,
+            "last_active": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         save_data(data)
+    else:
+        # Foydalanuvchi ma'lumotlarini yangilash
+        changed = False
+        u = data["users"][uid]
+        if first_name and u.get("first_name") != first_name:
+            u["first_name"] = first_name
+            changed = True
+        if username and u.get("username") != username:
+            u["username"] = username
+            changed = True
+        if "search_count" not in u:
+            u["search_count"] = 0
+            changed = True
+        if changed:
+            save_data(data)
+
+def increment_user_searches(user_id: int):
+    """Foydalanuvchi qidiruv sonini 1 taga oshiradi."""
+    data = load_data()
+    uid = str(user_id)
+    if "users" in data and uid in data["users"]:
+        u = data["users"][uid]
+        u["search_count"] = u.get("search_count", 0) + 1
+        u["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_data(data)
+
+def get_all_user_ids() -> List[int]:
+    """Barcha ro'yxatdan o'tgan foydalanuvchilar ID ro'yxatini qaytaradi."""
+    data = load_data()
+    users = data.get("users", {})
+    return [int(uid) for uid in users.keys() if uid.isdigit()]
+
+def get_usage_statistics() -> Dict[str, Any]:
+    """Adminlar uchun to'liq foydalanish statistikasini qaytaradi."""
+    data = load_data()
+    users = data.get("users", {})
+    total_users = len(users)
+    total_searches = sum(u.get("search_count", 0) for u in users.values())
+    active_users = sum(1 for u in users.values() if u.get("search_count", 0) > 0)
+    
+    # Eng faol 10 nafar foydalanuvchi
+    sorted_users = sorted(
+        users.items(),
+        key=lambda item: item[1].get("search_count", 0),
+        reverse=True
+    )[:10]
+
+    top_users = []
+    for uid, info in sorted_users:
+        top_users.append({
+            "id": uid,
+            "name": info.get("first_name", "Noma'lum"),
+            "username": info.get("username", ""),
+            "searches": info.get("search_count", 0),
+            "joined_at": info.get("joined_at", ""),
+            "last_active": info.get("last_active", "")
+        })
+
+    return {
+        "total_users": total_users,
+        "total_searches": total_searches,
+        "active_users": active_users,
+        "top_users": top_users
+    }
 
 def get_users_count() -> int:
     data = load_data()
@@ -118,7 +186,8 @@ def get_users_list(limit: int = 50) -> List[Dict[str, Any]]:
             "id": uid,
             "name": info.get("first_name", ""),
             "username": info.get("username", ""),
-            "joined_at": info.get("joined_at", "")
+            "joined_at": info.get("joined_at", ""),
+            "searches": info.get("search_count", 0)
         })
     return res
 
